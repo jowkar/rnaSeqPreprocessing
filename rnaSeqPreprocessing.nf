@@ -9,7 +9,7 @@ params.fasta = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence
 params.gtf = '/data/local/reference/igenomes/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf'
 params.dbsnp = '/data/local/reference/GATK_resource_bundle/hg38/hg38/dbsnp_146.hg38.vcf.gz'
 params.known_indels = '/data/local/reference/GATK_resource_bundle/hg38/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz'
-params.outdir = "./results"
+params.outdir = './results/'
 params.tmpdir = '/data/tmp'
 params.transcriptome_fasta = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.fa'
 params.transcriptome_gtf = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.gtf'
@@ -57,6 +57,7 @@ process STAR_ALIGN {
     path "*.sam"
     path "*.tab"
     path "*.Aligned.toTranscriptome.out.bam"
+    tuple val(sample), path('*.Aligned.out.bam'), emit: star_aligned_sample_bam
 
     shell:
     '''
@@ -103,6 +104,36 @@ process STAR_ALIGN {
     '''
 }
 
+process MERGE_BAMS {
+
+    publishDir "${params.outdir}/MergeSamFiles", pattern: "*.bam", mode: 'symlink'
+
+    input:
+    tuple val(sample), val(bams)
+    // tuple val(sample), val(r1_files), val(r2_files)
+
+    output:
+    path("*.bam"), emit: merged_bam
+    
+    script:
+    """
+    files="${bams.join(',')}"
+
+    result=""
+    IFS=',' read -ra file_array <<< "\$files"
+    for file in "\${file_array[@]}"; do
+        result+=" -I=\$file"
+    done
+    
+    result=\$(echo "\$result" | tr -d '[]')
+
+    gatk MergeSamFiles \
+      \$result \
+      --SORT_ORDER unsorted \
+      -O=${sample}.merged.bam
+    """
+}
+
 process HTSEQ_COUNT {
 
     maxForks 4
@@ -118,7 +149,6 @@ process HTSEQ_COUNT {
     sample = bam.getSimpleName()
     """
     /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 250MB -O BAM -o ./"${sample}".name_sort.bam "${bam}"
-    #samtools view -s 0.25 -b ${bam} > ${bam}.subsample25.bam
     #HTSeq-0.6.1p1
     htseq-count \
     -f bam \
@@ -336,7 +366,7 @@ process VEP {
         -B \$(pwd)/output_vep_updated:/output_vep_updated \
         -B /data/bin/vep_cache:/.vep \
         -B "\$vcf":/\$(basename "\$vcf") \
-        /data/proj/skcm_perkins/Pipelines/sarek/vep.sif /opt/vep/src/ensembl-vep/vep \
+        /data/proj/um_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/vep.sif /opt/vep/src/ensembl-vep/vep \
         --species homo_sapiens \
         --assembly GRCh38 \
         --offline \
@@ -362,7 +392,7 @@ process VCF2MAF {
 
     script:
     """
-    tumor_id=\$(basename "${vcf}" ".ann.vcf" |  awk -F"_L004" '{print \$1}')
+    tumor_id=\$(basename "${vcf}" ".ann.vcf" | awk -F"_L00" '{print \$1}' | awk -F"." '{print \$1}')
     vcf2maf.pl \
         --inhibit-vep \
         --input-vcf "${vcf}" \
@@ -440,8 +470,17 @@ workflow {
 		input_reads_ch_2
 	)
 
+    starOutputMerged = STAR_ALIGN.out.star_aligned_sample_bam
+    .collate(1).map{ it -> it.flatten() }
+    .map { sample, file -> 
+        def sname = sample.replaceAll('_L00.*', '')
+        return tuple(sname, file)
+    }.groupTuple().view()
+    
+    MERGE_BAMS( starOutputMerged )
+
     HTSEQ_COUNT(
-		STAR_ALIGN.out.star_aligned
+		MERGE_BAMS.out.merged_bam
 	)
 
     CLASSIFICATION(
@@ -449,7 +488,7 @@ workflow {
     )
 
     SORT_INDEX(
-        STAR_ALIGN.out.star_aligned
+        MERGE_BAMS.out.merged_bam
     )
 
     MARK_DUPLICATES(
