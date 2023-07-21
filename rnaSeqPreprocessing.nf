@@ -3,16 +3,25 @@
 nextflow.enable.dsl=2
 
 params.cpus = 63
-params.fastq = '/data/proj/um_perkins/Pipelines/rna/preprocessing/fastqdir/*/*_R{1,2}_*.fastq.gz'
-params.star_index_dir = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/'
-params.fasta = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/Homo_sapiens_assembly38.fasta'
-params.gtf = '/data/local/reference/igenomes/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf'
-params.dbsnp = '/data/local/reference/GATK_resource_bundle/hg38/hg38/dbsnp_146.hg38.vcf.gz'
-params.known_indels = '/data/local/reference/GATK_resource_bundle/hg38/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz'
 params.outdir = './results/'
 params.tmpdir = '/data/tmp'
+
+params.fastq = ''
+
+params.star_index_dir_human = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/'
+params.fasta_human = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/Homo_sapiens_assembly38.fasta'
+params.gtf_human = '/data/local/reference/igenomes/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf'
+
+params.dbsnp = '/data/local/reference/GATK_resource_bundle/hg38/hg38/dbsnp_146.hg38.vcf.gz'
+params.known_indels = '/data/local/reference/GATK_resource_bundle/hg38/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz'
+
 params.transcriptome_fasta = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.fa'
 params.transcriptome_gtf = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.gtf'
+
+// For PDX
+params.star_index_dir_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/genome_mouse'
+params.fasta_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/genome_mouse/GRCm38.primary_assembly.genome.fa'
+params.gtf_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/genome_mouse/gencode.vM22.annotation.gtf'
 
 input_reads_ch_1 = Channel.fromPath( params.fastq )
 input_reads_ch_2 = Channel.fromFilePairs( params.fastq, flat:true )
@@ -37,16 +46,16 @@ process FASTQC {
     """
 }
 
-process STAR_ALIGN {
+process STAR_ALIGN_HUMAN {
 
     maxForks 2
 
-	publishDir "${params.outdir}/STAR", pattern: "*.Aligned.out.bam", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.out", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.sam", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.tab", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.Aligned.toTranscriptome.out.bam", mode: 'symlink'
-    publishDir "${params.outdir}/STAR", pattern: "*.junction", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.Aligned.out.bam", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.out", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.sam", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.tab", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.Aligned.toTranscriptome.out.bam", mode: 'symlink'
+    publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.junction", mode: 'symlink'
 
     input:
         tuple val(sample), val(fastq_1), val(fastq_2)
@@ -82,10 +91,10 @@ process STAR_ALIGN {
     --chimMainSegmentMultNmax 1 \
     --chimOutType Junctions SeparateSAMold WithinBAM SoftClip \
     --chimSegmentMin 15 \
-    --genomeDir "!{params.star_index_dir}" \
+    --genomeDir "!{params.star_index_dir_human}" \
     --genomeLoad NoSharedMemory \
     --limitSjdbInsertNsj 1200000 \
-    --outFileNamePrefix "./!{sample}.$ID." \
+    --outFileNamePrefix "./!{sample}.$ID.human." \
     --outFilterIntronMotifs None \
     --outFilterMatchNminOverLread 0.33 \
     --outFilterMismatchNmax 999 \
@@ -104,20 +113,138 @@ process STAR_ALIGN {
     '''
 }
 
+process STAR_ALIGN_MOUSE {
+
+    maxForks 2
+
+	/* publishDir "${params.outdir}/STAR", pattern: "*.Aligned.out.bam", mode: 'symlink'
+	publishDir "${params.outdir}/STAR", pattern: "*.out", mode: 'symlink'
+	publishDir "${params.outdir}/STAR", pattern: "*.sam", mode: 'symlink'
+	publishDir "${params.outdir}/STAR", pattern: "*.tab", mode: 'symlink'
+	publishDir "${params.outdir}/STAR", pattern: "*.Aligned.toTranscriptome.out.bam", mode: 'symlink'
+    publishDir "${params.outdir}/STAR", pattern: "*.junction", mode: 'symlink' */
+
+    input:
+        tuple val(sample), val(fastq_1), val(fastq_2)
+
+	output:
+	path('*.Aligned.out.bam'), emit: star_aligned
+	path "*.out", emit: alignment_logs
+    path "*.sam"
+    path "*.tab"
+    tuple val(sample), path('*.Aligned.out.bam'), emit: star_aligned_sample_bam
+
+    shell:
+    '''
+	ID=$(zcat "!{fastq_1}" | head -n 1 | awk -F":" '{print $3}').$(zcat "!{fastq_1}" | head -n 1 | awk -F":" '{print $4}')
+	SM="!{sample}"
+	PL="ILLUMINA"
+	LB="$SM"
+	#read_group="ID:${ID} PL:${PL} LB:${LB} SM:${SM}"
+    #echo $read_group
+    #--outSAMattrRGline "$read_group" \
+
+    STAR \
+    --readFilesIn "!{fastq_1}" "!{fastq_2}" \
+    --outSAMattrRGline ID:${ID} PL:${PL} LB:${LB} SM:${SM} \
+    --alignIntronMax 1000000 \
+    --alignIntronMin 20 \
+    --alignMatesGapMax 1000000 \
+    --alignSJDBoverhangMin 1 \
+    --alignSJoverhangMin 8 \
+    --alignSoftClipAtReferenceEnds Yes \
+    --chimJunctionOverhangMin 15 \
+    --chimMainSegmentMultNmax 1 \
+    --chimOutType Junctions SeparateSAMold WithinBAM SoftClip \
+    --chimSegmentMin 15 \
+    --genomeDir "!{params.star_index_dir_mouse}" \
+    --genomeLoad NoSharedMemory \
+    --limitSjdbInsertNsj 1200000 \
+    --outFileNamePrefix "./!{sample}.$ID.mouse." \
+    --outFilterIntronMotifs None \
+    --outFilterMatchNminOverLread 0.33 \
+    --outFilterMismatchNmax 999 \
+    --outFilterMismatchNoverLmax 0.1 \
+    --outFilterMultimapNmax 20 \
+    --outFilterScoreMinOverLread 0.33 \
+    --outFilterType BySJout \
+    --outSAMattributes NH HI AS nM NM ch \
+    --outSAMstrandField intronMotif \
+    --outSAMtype BAM Unsorted \
+    --outSAMunmapped Within \
+    --readFilesCommand zcat \
+    --runThreadN 20 \
+    --twopassMode Basic
+    '''
+}
+
+process SORT_NAME_HUMAN {
+
+    maxForks 1
+
+    input:
+        val(bam)
+
+    output:
+        path("*.name_sort.bam"), emit: sort_name_human_ch
+
+    script:
+    """
+    ulimit -n 65535
+    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
+    """
+}
+
+process SORT_NAME_MOUSE {
+
+    maxForks 1
+
+    input:
+        val(bam)
+
+    output:
+        path("*.name_sort.bam"), emit: sort_name_mouse_ch
+
+    script:
+    """
+    ulimit -n 65535
+    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
+    """
+}
+
+process DISAMBIGUATE {
+
+    publishDir "${params.outdir}/disambiguated", pattern: "*.*", mode: 'symlink'
+
+    input:
+        val(sname)
+        val(bam_human)
+        val(bam_mouse)
+
+    output:
+        tuple val(sname), path("*.disambiguatedSpeciesA.bam"), emit: bam_human_disambiguated_ch
+        path("*.*")
+    script:
+    """
+    echo "${sname}"
+    ngs_disambiguate -s "${sname}" -o "./" -a star "${bam_human}" "${bam_mouse}"
+    """
+}
+
 process MERGE_BAMS {
 
     publishDir "${params.outdir}/MergeSamFiles", pattern: "*.bam", mode: 'symlink'
 
     input:
     tuple val(sample), val(bams)
-    // tuple val(sample), val(r1_files), val(r2_files)
 
     output:
     path("*.bam"), emit: merged_bam
     
+    // In the case of one input bam file only, essentially just copies the file.
     script:
     """
-    files="${bams.join(',')}"
+    files="${[bams].flatten().join(',')}"
 
     result=""
     IFS=',' read -ra file_array <<< "\$files"
@@ -159,7 +286,7 @@ process HTSEQ_COUNT {
     -i gene_id \
     -m intersection-nonempty \
     "${sample}".name_sort.bam \
-    "${params.gtf}" > ./${sample}.htseq.counts
+    "${params.gtf_human}" > ./${sample}.htseq.counts
 
     rm ./"${sample}".name_sort.bam
     #"${bam}" \
@@ -238,7 +365,7 @@ process SPLIT_N_TRIM {
 
     script:
     """
-    gatk SplitNCigarReads --tmp-dir="${params.tmpdir}" -R="${params.fasta}" -I="${bam}" -O=\$(basename "${bam}" ".bam").split.bam
+    gatk SplitNCigarReads --tmp-dir="${params.tmpdir}" -R="${params.fasta_human}" -I="${bam}" -O=\$(basename "${bam}" ".bam").split.bam
     """
 }
 
@@ -258,27 +385,27 @@ process RECALIBRATION {
     """
     gatk BaseRecalibrator \
         -I="${bam}" \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         --known-sites="${params.dbsnp}" \
         --known-sites="${params.known_indels}" \
         -O="${bam}".recal_pass1.table
 
     gatk ApplyBQSR \
         -I="${bam}" \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         --bqsr-recal-file="${bam}".recal_pass1.table \
         -O=\$(basename "${bam}" ".bam").recal.pass1.bam
 
     gatk BaseRecalibrator \
         -I=\$(basename "${bam}" ".bam").recal.pass1.bam \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         --known-sites="${params.dbsnp}" \
         --known-sites="${params.known_indels}" \
         -O=\$(basename "${bam}" ".bam").recal.pass1.bam.recal_pass2.table
 
     gatk ApplyBQSR \
         -I=\$(basename "${bam}" ".bam").recal.pass1.bam \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         --bqsr-recal-file=\$(basename "${bam}" ".bam").recal.pass1.bam.recal_pass2.table \
         -O=\$(basename "${bam}" ".bam").recal.pass2.bam
     """
@@ -297,7 +424,7 @@ process VARIANT_CALLING {
     script:
     """
     gatk HaplotypeCaller \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         -I="${bam}" \
         --dont-use-soft-clipped-bases=true \
         --standard-min-confidence-threshold-for-calling=20.0 \
@@ -315,7 +442,7 @@ process FILTER_VARIANTS {
     script:
     """
     gatk VariantFiltration \
-        -R="${params.fasta}" \
+        -R="${params.fasta_human}" \
         -V="${vcf}" \
         --cluster-window-size 35 \
         --cluster-size 3 \
@@ -403,6 +530,46 @@ process VCF2MAF {
     """
 }
 
+process BAM_TO_FASTQ {
+
+    input:
+        tuple val(sname), path(bam)
+
+    output:
+        tuple val(sname), path("${sname}_human_R1.fastq"), path("${sname}_human_R2.fastq"), emit:bam_to_fastq_ch
+
+    script:
+    """
+    TMP_DIR=./\$(basename "${bam}" ".bam")_tmp
+    #export TMP_DIR=./\$(basename "${bam}" ".bam")_tmp #sets environmental variable for temporary directory
+    #if [ ! -d \$TMP_DIR ];
+    #then
+    #    mkdir -p \$TMP_DIR
+    #fi
+
+    # Sort by read name
+    gatk SortSam \
+        --TMP_DIR=\$TMP_DIR \
+        -I ${bam} \
+        -O queryname_sorted.bam \
+        -SO queryname
+
+    TMP_DIR_2=./\$(basename "${bam}" ".bam")_tmp_2
+
+    # Convert to FASTQ while keeping the full reads (including soft trimmed parts)
+    gatk SamToFastq \
+        --TMP_DIR=\$TMP_DIR_2 \
+        -I queryname_sorted.bam \
+        -F ${sname}_human_R1.fastq \
+        -F2 ${sname}_human_R2.fastq \
+        --VALIDATION_STRINGENCY LENIENT \
+        --INCLUDE_NON_PF_READS true
+
+    #rm queryname_sorted.bam
+    """
+
+}
+
 process KALLISTO_INDEX {
 
     publishDir "${params.outdir}/kallisto", mode: 'symlink'
@@ -466,11 +633,45 @@ workflow {
 		input_reads_ch_1
 	)
 
-    STAR_ALIGN(
+    starOutputHuman = STAR_ALIGN_HUMAN(
 		input_reads_ch_2
 	)
 
-    starOutputMerged = STAR_ALIGN.out.star_aligned_sample_bam
+    if (params.is_pdx){
+        starOutputMouse = STAR_ALIGN_MOUSE(
+		    input_reads_ch_2
+	    )
+    }
+
+    sortNameOutputHuman = SORT_NAME_HUMAN(
+        starOutputHuman.star_aligned
+    )
+
+    if (params.is_pdx){
+        sortNameOutputMouse = SORT_NAME_MOUSE(
+            starOutputMouse.star_aligned
+        )
+    }
+
+    if (params.is_pdx){
+        sname_ch = sortNameOutputHuman.sort_name_human_ch.map { file ->
+            def basename = file.baseName.tokenize('.').first()
+            return basename
+        }
+
+        DISAMBIGUATE(
+            sname_ch,
+            sortNameOutputHuman.sort_name_human_ch,
+            sortNameOutputMouse.sort_name_mouse_ch
+        )
+    }
+
+    if (params.is_pdx){
+        starOutputMerged = DISAMBIGUATE.out.bam_human_disambiguated_ch.view()
+    } else {
+        starOutputMerged = STAR_ALIGN.out.star_aligned_sample_bam
+    }
+
     .collate(1).map{ it -> it.flatten() }
     .map { sample, file -> 
         def sname = sample.replaceAll('_L00.*', '')
@@ -525,7 +726,16 @@ workflow {
 
     KALLISTO_INDEX()
 
-    input_reads_ch_with_index=input_reads_ch_2.combine(KALLISTO_INDEX.out.kallisto_index_ch)
+    if (params.is_pdx){
+        pdx_merged_ch = MERGE_BAMS.out.merged_bam.map { file ->
+            def basename = file.baseName.tokenize('.').first()
+            return tuple(basename, file)
+        }
+        bam_to_fastq_from_merged_ch = BAM_TO_FASTQ(pdx_merged_ch)
+        input_reads_ch_with_index = bam_to_fastq_from_merged_ch.combine(KALLISTO_INDEX.out.kallisto_index_ch)
+    } else {
+        input_reads_ch_with_index = input_reads_ch_2.combine(KALLISTO_INDEX.out.kallisto_index_ch)
+    }
 
     KALLISTO(
         input_reads_ch_with_index
