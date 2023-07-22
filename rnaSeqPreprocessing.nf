@@ -307,13 +307,12 @@ process CLASSIFICATION {
 
     script:
     """
-    #!/usr/bin/env Rscript --vanilla
-    library(classification)
-    library(stringr)
-    outdir <- paste0("./",str_split_fixed(basename("${htseq_counts}"),"\\\\.",2)[,1])
-    res <- classify(input_test="${htseq_counts}",genome="hg38",outdir=outdir)
-    s <- sessionInfo()
-    saveRDS(s,paste0(outdir,"sessionInfo.rda"))
+    Rscript --vanilla -e 'library(rnaSeqPanCanClassifier); classify(
+            input_test="${htseq_counts}", input_train = "tcga", outdir = "./", k = 6,
+            subset_to=c(), genome = "hg38", labels_train = NULL,
+            extension_test = ".htseq.counts", extension_train = ".gene_counts",
+            override_labels = F, is_matrix = F
+    )'
     """
 }
 
