@@ -26,6 +26,14 @@ params.gtf_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPr
 input_reads_ch_1 = Channel.fromPath( params.fastq )
 input_reads_ch_2 = Channel.fromFilePairs( params.fastq, flat:true )
 
+// For classification with SCOPE and CUP_AI_DX
+params.ext = '.htseq.counts'
+params.genome = 'hg38'
+params.tx2gene_fname = "/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/tx2gene.csv"
+params.map_hg19_fname = "/data/proj/cup/Investigations/rna/map.ensembl_entrez.hg19.rda"
+params.map_hg38_fname = "/data/proj/cup/Investigations/rna/map.ensembl_entrez.hg38.rda"
+params.features_fname = "/data/proj/cup/Investigations/rna/CUP-AI-Dx/Features_817.csv"
+
 process FASTQC {
 
     maxForks 1
@@ -296,6 +304,203 @@ process CLASSIFICATION {
     """
 }
 
+process PREPARE_COUNT_MATRIX_SCOPE {
+
+    input:
+        val(htseq_counts)
+
+    output:
+        path("*.txt"), emit: matrix_path
+
+    script:
+    """
+    Rscript --vanilla -e 'library(tidyverse); library(Biobase);
+
+    sname <- str_split_fixed(basename("${htseq_counts}"),"\\\\.",2)[,1]
+    indir <- paste0("./tmp/", sname)
+    dir.create(indir, recursive = T, showWarnings = F)
+    system(paste0("ln -s ${htseq_counts} ", indir, "/"))
+
+    inhouse <- rnaSeqPanCanClassifier:::.setup_expression(indir, extension = "${params.ext}")
+    g_info <- rnaSeqPanCanClassifier:::.get_gene_info(genes = rownames(inhouse), genome = "${params.genome}", symbols = T)
+    inhouse <- inhouse[rownames(g_info),]
+    inhouse <- rnaSeqPanCanClassifier:::.rpkm_eset(inhouse, gene_info = g_info)
+
+    inhouse.mat <- as.data.frame(exprs(inhouse), stringsAsFactors=F)
+    inhouse.mat <- cbind(ENSEMBL = rownames(inhouse.mat), inhouse.mat)
+    write.table(inhouse.mat, file = paste0("./",sname,".rpkm.txt"), col.names = T,
+                row.names = F, sep = "\t", quote = F)'
+    """
+}
+
+process PREPARE_COUNT_MATRIX_CUP_AI_DX {
+
+    input:
+        path(transcript_counts)
+
+    output:
+        path("*.csv"), emit: matrix_path
+
+    script:
+    """
+    Rscript --vanilla -e '
+    library(tidyverse)
+    library(tximport)
+
+    sname <- basename(dirname(normalizePath("${transcript_counts}")))
+    fnames <- setNames("${transcript_counts}",sname)
+
+    tx2gene <- read.table("${params.tx2gene_fname}", header=F, sep=",")
+    colnames(tx2gene) <- c("tx","gene")
+
+    txi.kallisto <- tximport(fnames, type = "kallisto", txOut = F,
+                             countsFromAbundance = "lengthScaledTPM",
+                             tx2gene = tx2gene,
+                             ignoreTxVersion = F,
+                             ignoreAfterBar = F,dropInfReps=T)
+
+    log2_tpm_p1 <- log2(txi.kallisto[["counts"]]+1)
+
+    extract_features <- function(log2_tpm_p1){
+      databases <- list()
+      databases[["hg19"]][["map"]] <- readRDS(
+        file = "${params.map_hg19_fname}")
+      databases[["hg38"]][["map"]] <- readRDS(
+        file = "${params.map_hg38_fname}")
+
+      features <- read.csv("${params.features_fname}", header=T)
+      features <- features[,2]
+      features <- gsub(features, pattern = "^X", replacement = "")
+
+      ens_keep <- union(databases[["hg38"]][["map"]][["ensembl_gene_id"]][
+          databases[["hg38"]][["map"]][["entrezgene_id"]] %in% features],
+            databases[["hg19"]][["map"]][["ensembl_gene_id"]][
+                databases[["hg19"]][["map"]][["entrezgene_id"]] %in% 
+                setdiff(features,as.character(databases[["hg38"]][["map"]][["entrezgene_id"]]))])
+
+      log2_tpm_p1.minimal <- log2_tpm_p1[rownames(log2_tpm_p1) %in% ens_keep,]
+      log2_tpm_p1.minimal <- as.data.frame(log2_tpm_p1.minimal,stringsAsFactors=F)
+
+      map <- rbind(databases[["hg38"]][["map"]][databases[["hg38"]][["map"]][["ensembl_gene_id"]] %in% ens_keep,],
+        databases[["hg19"]][["map"]][databases[["hg19"]][["map"]][["ensembl_gene_id"]] %in% 
+        databases[["hg19"]][["map"]][["ensembl_gene_id"]][databases[["hg19"]][["map"]][["entrezgene_id"]] %in% 
+        setdiff(features,as.character(databases[["hg38"]][["map"]][["entrezgene_id"]]))],])
+
+      stopifnot(all(rownames(log2_tpm_p1.minimal) %in% map[["ensembl_gene_id"]]))
+
+      tmp <- merge(log2_tpm_p1.minimal, map, by.x="row.names", by.y="ensembl_gene_id", all.x=T, all.y=F)
+
+      tmp <- tmp[tmp[["entrezgene_id"]] %in% features,]
+      rownames(tmp) <- NULL
+      tmp[["Row.names"]] <- NULL
+      dup_ez <- names(which(table(tmp[["entrezgene_id"]])>1))
+      tmp.keep <- list()
+      for (dup in dup_ez){
+        idx <- tmp[["entrezgene_id"]] == dup
+        tmp.keep[[dup]] <- tmp[idx,][which.max(apply(tmp[idx,],1,mean)),]
+      }
+      tmp.keep <- do.call("rbind",tmp.keep)
+
+      tmp <- rbind(tmp[! tmp[["entrezgene_id"]] %in% names(which(table(tmp[["entrezgene_id"]])>1)),],tmp.keep)
+      stopifnot(nrow(tmp)==length(features))
+      rownames(tmp) <- tmp[["entrezgene_id"]]
+      tmp[["entrezgene_id"]] <- NULL
+      stopifnot(all(rownames(tmp) %in% features))
+      stopifnot(all(features %in% rownames(tmp)))
+      tmp[["dummy"]] <- ""
+      tmp <- tmp[features,]
+      tmp[["dummy"]] <- NULL
+      stopifnot(identical(features,rownames(tmp)))
+
+      log2_tpm_p1.minimal <- tmp
+
+      return(log2_tpm_p1.minimal)
+    }
+
+    format_output <- function(log2_tpm_p1.minimal){
+      log2_tpm_p1.minimal <- as.data.frame(t(log2_tpm_p1.minimal))
+      colnames(log2_tpm_p1.minimal) <- paste0("X",colnames(log2_tpm_p1.minimal))
+      log2_tpm_p1.minimal[["X"]] <- rownames(log2_tpm_p1.minimal)
+      rownames(log2_tpm_p1.minimal) <- NULL
+      log2_tpm_p1.minimal <- log2_tpm_p1.minimal[,c(which(colnames(log2_tpm_p1.minimal)=="X"),which(colnames(log2_tpm_p1.minimal)!="X"))]
+      colnames(log2_tpm_p1.minimal)[colnames(log2_tpm_p1.minimal)=="X"] <- ""
+
+      return(log2_tpm_p1.minimal)
+    }
+
+    log2_tpm_p1.minimal <- extract_features(log2_tpm_p1)
+    log2_tpm_p1.minimal <- format_output(log2_tpm_p1.minimal)
+
+    write.table(log2_tpm_p1.minimal,
+                file = paste0("./",sname,".log2_tpm_p1.csv"),
+                sep = ",", col.names = T, row.names = F)'
+    """
+}
+
+process CLASSIFY_SCOPE {
+    
+    maxForks 10
+
+    publishDir "${params.outdir}/scope", mode: 'copy'
+
+    input:
+        path(matrix_path)
+
+    output:
+        path("*")
+
+    script:
+    """
+    data_matrix="\$(readlink -f ${matrix_path})"
+    sname="\$(basename \$data_matrix | awk -F".rpkm" '{print \$1}')"
+    outdir="\$sname"
+    if [ ! -d \$outdir ];
+    then
+        mkdir \$outdir
+    fi
+
+    singularity exec \
+        -B "\$outdir":/output \
+        -B "\$data_matrix":/rpkm.txt \
+        docker://jowkar/scope_container:latest /usr/bin/python3.7 -c \
+        'import cancerscope as cs; \
+        scope_obj = cs.scope(); \
+        predictions_from_file = scope_obj.get_predictions_from_file("/rpkm.txt",outdir = "/output")'
+    """
+}
+
+process CLASSIFY_CUP_AI_DX {
+
+    maxForks 10
+
+    publishDir "${params.outdir}/cup_ai_dx", mode: 'copy'
+
+    input:
+        path matrix_path
+
+    output:
+        path("*")
+
+    script:
+    """
+    data_csv="\$(readlink -f ${matrix_path})" # absolute path
+    sname="\$(basename \$data_csv | awk -F".log2" '{print \$1}')"
+    outdir="\$sname"
+    if [ ! -d \$outdir ];
+    then
+        mkdir \$outdir
+    fi
+
+    singularity exec \
+        -B "\$outdir":/scripts/output \
+        -B "\$data_csv":/scripts/data/\$sname.csv \
+        --no-home \
+        --fakeroot \
+        docker://yuz12012/ai4cancer:product \
+        /bin/bash -rcfile /root/.bashrc -c "source /root/.bashrc && conda activate tf-cpu && cd /scripts/ && python RunPrediction.py --data_set=data/\$sname.csv"
+    """
+}
+
 process SORT_INDEX {
 
     maxForks 1
@@ -357,7 +562,6 @@ process RECALIBRATION {
         val(bam)
     output:
         path("*.pass2.bam"), emit: recal_ch
-        //path("*.pass2.bai")
 
     script:
     """
@@ -397,7 +601,6 @@ process VARIANT_CALLING {
         val(bam)
     output:
         path("*.vcf.gz"), emit: variant_calling_ch
-        //path("*.vcf.gz.tbi")
 
     script:
     """
@@ -438,7 +641,6 @@ process REMOVE_FAILING {
         val(vcf)
     output:
         path("*.pass.vcf.gz"), emit: remove_failing_ch
-        //path("*.pass.vcf.gz.tbi")
 
     script:
     """
@@ -519,11 +721,6 @@ process BAM_TO_FASTQ {
     script:
     """
     TMP_DIR=./\$(basename "${bam}" ".bam")_tmp
-    #export TMP_DIR=./\$(basename "${bam}" ".bam")_tmp #sets environmental variable for temporary directory
-    #if [ ! -d \$TMP_DIR ];
-    #then
-    #    mkdir -p \$TMP_DIR
-    #fi
 
     # Sort by read name
     gatk SortSam \
@@ -571,7 +768,7 @@ process KALLISTO {
 
     output:
         path("${sample}/fusion.txt"), emit: kallisto_ch
-        //path("*")
+        path("${sample}/abundance.h5"), emit: kallisto_h5_ch
 
     script:
     """
@@ -631,10 +828,6 @@ workflow {
     }
 
     if (params.is_pdx){
-        /* sname_ch = sortNameOutputHuman.sort_name_human_ch.map { file ->
-            def basename = file.baseName.tokenize('.').first()
-            return basename
-        } */
         sortNameHumanMouse = sortNameOutputHuman.join(
             sortNameOutputMouse, by: 0)
 
@@ -714,11 +907,27 @@ workflow {
         input_reads_ch_with_index = input_reads_ch_2.combine(kallisto_index_ch)
     }
 
-    kallisto_ch = KALLISTO(
+    KALLISTO(
         input_reads_ch_with_index
     )
 
     PIZZLY (
-        kallisto_ch
+        KALLISTO.out.kallisto_ch
+    )
+
+    scope_matrix_path_ch = PREPARE_COUNT_MATRIX_SCOPE(
+        htseq_ch
+    )
+
+    cup_ai_dx_matrix_path_ch = PREPARE_COUNT_MATRIX_CUP_AI_DX(
+        KALLISTO.out.kallisto_h5_ch
+    )
+
+    CLASSIFY_SCOPE(
+        scope_matrix_path_ch
+    )
+
+    CLASSIFY_CUP_AI_DX(
+        cup_ai_dx_matrix_path_ch
     )
 }
