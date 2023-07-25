@@ -61,11 +61,6 @@ process STAR_ALIGN_HUMAN {
         tuple val(sample), val(fastq_1), val(fastq_2)
 
 	output:
-	path('*.Aligned.out.bam'), emit: star_aligned
-	path "*.out", emit: alignment_logs
-    path "*.sam"
-    path "*.tab"
-    path "*.Aligned.toTranscriptome.out.bam"
     tuple val(sample), path('*.Aligned.out.bam'), emit: star_aligned_sample_bam
 
     shell:
@@ -117,21 +112,10 @@ process STAR_ALIGN_MOUSE {
 
     maxForks 2
 
-	/* publishDir "${params.outdir}/STAR", pattern: "*.Aligned.out.bam", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.out", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.sam", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.tab", mode: 'symlink'
-	publishDir "${params.outdir}/STAR", pattern: "*.Aligned.toTranscriptome.out.bam", mode: 'symlink'
-    publishDir "${params.outdir}/STAR", pattern: "*.junction", mode: 'symlink' */
-
     input:
         tuple val(sample), val(fastq_1), val(fastq_2)
 
 	output:
-	path('*.Aligned.out.bam'), emit: star_aligned
-	path "*.out", emit: alignment_logs
-    path "*.sam"
-    path "*.tab"
     tuple val(sample), path('*.Aligned.out.bam'), emit: star_aligned_sample_bam
 
     shell:
@@ -183,15 +167,15 @@ process SORT_NAME_HUMAN {
     maxForks 1
 
     input:
-        val(bam)
+        tuple val(sname), path(bam)
 
     output:
-        path("*.name_sort.bam"), emit: sort_name_human_ch
+        tuple val(sname), path("*.name_sort.bam"), emit: sort_name_human_ch
 
     script:
     """
     ulimit -n 65535
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
+    /opt/conda/envs/samtools_env/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
     """
 }
 
@@ -200,15 +184,15 @@ process SORT_NAME_MOUSE {
     maxForks 1
 
     input:
-        val(bam)
+        tuple val(sname), path(bam)
 
     output:
-        path("*.name_sort.bam"), emit: sort_name_mouse_ch
+        tuple val(sname), path("*.name_sort.bam"), emit: sort_name_mouse_ch
 
     script:
     """
     ulimit -n 65535
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
+    /opt/conda/envs/samtools_env/bin/samtools sort -n -@ ${params.cpus} -m 2G -O BAM -o \$(basename "${bam}" ".bam").name_sort.bam "${bam}"
     """
 }
 
@@ -217,13 +201,11 @@ process DISAMBIGUATE {
     publishDir "${params.outdir}/disambiguated", pattern: "*.*", mode: 'symlink'
 
     input:
-        val(sname)
-        val(bam_human)
-        val(bam_mouse)
+        tuple val(sname), path(bam_human), path(bam_mouse)
 
     output:
         tuple val(sname), path("*.disambiguatedSpeciesA.bam"), emit: bam_human_disambiguated_ch
-        path("*.*")
+
     script:
     """
     echo "${sname}"
@@ -275,9 +257,9 @@ process HTSEQ_COUNT {
     script:
     sample = bam.getSimpleName()
     """
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -n -@ ${params.cpus} -m 250MB -O BAM -o ./"${sample}".name_sort.bam "${bam}"
+    /opt/conda/envs/samtools_env/bin/samtools sort -n -@ ${params.cpus} -m 250MB -O BAM -o ./"${sample}".name_sort.bam "${bam}"
     #HTSeq-0.6.1p1
-    htseq-count \
+    /opt/conda/envs/htseq_env/bin/htseq-count \
     -f bam \
     -r name \
     -s no \
@@ -289,8 +271,6 @@ process HTSEQ_COUNT {
     "${params.gtf_human}" > ./${sample}.htseq.counts
 
     rm ./"${sample}".name_sort.bam
-    #"${bam}" \
-    #rm \$(readlink -f "${bam}")
     """
 }
 
@@ -328,8 +308,8 @@ process SORT_INDEX {
     script:
     """
     ulimit -n 65535
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools sort -@ ${params.cpus} -m 250MB -O BAM -o \$(basename "${bam}" ".bam").sorted.bam "${bam}"
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools index \$(basename "${bam}" ".bam").sorted.bam
+    /opt/conda/envs/samtools_env/bin/samtools sort -@ ${params.cpus} -m 250MB -O BAM -o \$(basename "${bam}" ".bam").sorted.bam "${bam}"
+    /opt/conda/envs/samtools_env/bin/samtools index \$(basename "${bam}" ".bam").sorted.bam
     """
 }
 
@@ -347,9 +327,8 @@ process MARK_DUPLICATES {
     gatk MarkDuplicates \
         --INPUT="${bam}" \
         --OUTPUT=\$(basename "${bam}" ".bam").MarkDuplicates.bam \
-        --METRICS_FILE=\$(basename "${bam}" ".bam").MarkDuplicates.metrics.txt
-
-    /data/miniconda3/envs/cup_star_htseq/bin/samtools index -@ ${params.cpus} \$(basename "${bam}" ".bam").MarkDuplicates.bam
+        --METRICS_FILE=\$(basename "${bam}" ".bam").MarkDuplicates.metrics.txt \
+        --CREATE_INDEX true
     """
 }
 
@@ -378,7 +357,7 @@ process RECALIBRATION {
         val(bam)
     output:
         path("*.pass2.bam"), emit: recal_ch
-        path("*.pass2.bai")
+        //path("*.pass2.bai")
 
     script:
     """
@@ -418,7 +397,7 @@ process VARIANT_CALLING {
         val(bam)
     output:
         path("*.vcf.gz"), emit: variant_calling_ch
-        path("*.vcf.gz.tbi")
+        //path("*.vcf.gz.tbi")
 
     script:
     """
@@ -459,7 +438,7 @@ process REMOVE_FAILING {
         val(vcf)
     output:
         path("*.pass.vcf.gz"), emit: remove_failing_ch
-        path("*.pass.vcf.gz.tbi")
+        //path("*.pass.vcf.gz.tbi")
 
     script:
     """
@@ -535,7 +514,7 @@ process BAM_TO_FASTQ {
         tuple val(sname), path(bam)
 
     output:
-        tuple val(sname), path("${sname}_human_R1.fastq"), path("${sname}_human_R2.fastq"), emit:bam_to_fastq_ch
+        tuple val(sname), path("${sname}_human_R1.fastq.gz"), path("${sname}_human_R2.fastq.gz"), emit:bam_to_fastq_ch
 
     script:
     """
@@ -559,14 +538,13 @@ process BAM_TO_FASTQ {
     gatk SamToFastq \
         --TMP_DIR=\$TMP_DIR_2 \
         -I queryname_sorted.bam \
-        -F ${sname}_human_R1.fastq \
-        -F2 ${sname}_human_R2.fastq \
+        -F ${sname}_human_R1.fastq.gz \
+        -F2 ${sname}_human_R2.fastq.gz \
         --VALIDATION_STRINGENCY LENIENT \
         --INCLUDE_NON_PF_READS true
 
-    #rm queryname_sorted.bam
+    rm queryname_sorted.bam
     """
-
 }
 
 process KALLISTO_INDEX {
@@ -593,7 +571,7 @@ process KALLISTO {
 
     output:
         path("${sample}/fusion.txt"), emit: kallisto_ch
-        path("*")
+        //path("*")
 
     script:
     """
@@ -643,32 +621,32 @@ workflow {
     }
 
     sortNameOutputHuman = SORT_NAME_HUMAN(
-        starOutputHuman.star_aligned
+        starOutputHuman
     )
 
     if (params.is_pdx){
         sortNameOutputMouse = SORT_NAME_MOUSE(
-            starOutputMouse.star_aligned
+            starOutputMouse
         )
     }
 
     if (params.is_pdx){
-        sname_ch = sortNameOutputHuman.sort_name_human_ch.map { file ->
+        /* sname_ch = sortNameOutputHuman.sort_name_human_ch.map { file ->
             def basename = file.baseName.tokenize('.').first()
             return basename
-        }
+        } */
+        sortNameHumanMouse = sortNameOutputHuman.join(
+            sortNameOutputMouse, by: 0)
 
-        DISAMBIGUATE(
-            sname_ch,
-            sortNameOutputHuman.sort_name_human_ch,
-            sortNameOutputMouse.sort_name_mouse_ch
+        disambiguate_ch = DISAMBIGUATE(
+            sortNameHumanMouse
         )
     }
 
     if (params.is_pdx){
-        starOutputMerged = DISAMBIGUATE.out.bam_human_disambiguated_ch.view()
+        starOutputMerged = disambiguate_ch.view()
     } else {
-        starOutputMerged = STAR_ALIGN.out.star_aligned_sample_bam
+        starOutputMerged = starOutputHuman
     }
 
     .collate(1).map{ it -> it.flatten() }
@@ -677,70 +655,70 @@ workflow {
         return tuple(sname, file)
     }.groupTuple().view()
     
-    MERGE_BAMS( starOutputMerged )
+    merged_bam_ch = MERGE_BAMS( starOutputMerged )
 
-    HTSEQ_COUNT(
-		MERGE_BAMS.out.merged_bam
+    htseq_ch = HTSEQ_COUNT(
+		merged_bam_ch
 	)
 
     CLASSIFICATION(
-        HTSEQ_COUNT.out.htseq_ch
+        htseq_ch
     )
 
-    SORT_INDEX(
-        MERGE_BAMS.out.merged_bam
+    sort_index_ch = SORT_INDEX(
+        merged_bam_ch
     )
 
-    MARK_DUPLICATES(
-        SORT_INDEX.out.sort_index_ch
+    markduplicates_ch = MARK_DUPLICATES(
+        sort_index_ch
     )
 
-    SPLIT_N_TRIM(
-        MARK_DUPLICATES.out.markduplicates_ch
+    split_ch = SPLIT_N_TRIM(
+        markduplicates_ch
     )
 
-    RECALIBRATION(
-        SPLIT_N_TRIM.out.split_ch
+    recal_ch = RECALIBRATION(
+        split_ch
     )
 
-    VARIANT_CALLING(
-        RECALIBRATION.out.recal_ch
+    variant_calling_ch = VARIANT_CALLING(
+        recal_ch
     )
 
-    FILTER_VARIANTS(
-        VARIANT_CALLING.out.variant_calling_ch
+    filter_variants_ch = FILTER_VARIANTS(
+        variant_calling_ch
     )
 
-    REMOVE_FAILING(
-        FILTER_VARIANTS.out.filter_variants_ch
+    remove_failing_ch = REMOVE_FAILING(
+        filter_variants_ch
     )
 
-    VEP(
-        REMOVE_FAILING.out.remove_failing_ch
+    vep_ch = VEP(
+        remove_failing_ch
     )
 
     VCF2MAF(
-        VEP.out.vep_ch
+        vep_ch
     )
 
-    KALLISTO_INDEX()
+    kallisto_index_ch = KALLISTO_INDEX()
 
     if (params.is_pdx){
-        pdx_merged_ch = MERGE_BAMS.out.merged_bam.map { file ->
+        pdx_merged_ch = merged_bam_ch.map { file ->
             def basename = file.baseName.tokenize('.').first()
             return tuple(basename, file)
         }
         bam_to_fastq_from_merged_ch = BAM_TO_FASTQ(pdx_merged_ch)
-        input_reads_ch_with_index = bam_to_fastq_from_merged_ch.combine(KALLISTO_INDEX.out.kallisto_index_ch)
+        input_reads_ch_with_index = bam_to_fastq_from_merged_ch.combine(kallisto_index_ch)
     } else {
-        input_reads_ch_with_index = input_reads_ch_2.combine(KALLISTO_INDEX.out.kallisto_index_ch)
+        input_reads_ch_with_index = input_reads_ch_2.combine(kallisto_index_ch)
     }
 
-    KALLISTO(
+    kallisto_ch = KALLISTO(
         input_reads_ch_with_index
     )
 
     PIZZLY (
-        KALLISTO.out.kallisto_ch
+        kallisto_ch
     )
 }
