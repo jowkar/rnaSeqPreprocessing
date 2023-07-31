@@ -56,7 +56,7 @@ process FASTQC {
 
 process STAR_ALIGN_HUMAN {
 
-    maxForks 2
+    maxForks params.is_pdx ? 1 : 2
 
     publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.Aligned.out.bam", mode: 'symlink'
     publishDir params.is_pdx ? "${params.outdir}/STAR" : null, pattern: "*.out", mode: 'symlink'
@@ -118,7 +118,7 @@ process STAR_ALIGN_HUMAN {
 
 process STAR_ALIGN_MOUSE {
 
-    maxForks 2
+    maxForks 1
 
     input:
         tuple val(sample), val(fastq_1), val(fastq_2)
