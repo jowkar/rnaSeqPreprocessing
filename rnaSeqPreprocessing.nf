@@ -2,22 +2,26 @@
 
 nextflow.enable.dsl=2
 
-params.cpus = 63
-params.outdir = './results/'
+params.cpus = 4
+params.outdir = 'results/'
 params.tmpdir = '/data/tmp'
 
 params.fastq = ''
 
-params.star_index_dir_human = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/'
-params.fasta_human = '/data/local/reference/igenomes/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/Homo_sapiens_assembly38.fasta'
-params.gtf_human = '/data/local/reference/igenomes/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf'
+params.star_index_dir_human = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/'
+params.fasta_human = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/GATK/GRCh38/Sequence/WholeGenomeFasta/Homo_sapiens_assembly38.fasta'
+params.gtf_human = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/NCBI/GRCh38/Annotation/Genes/genes.gtf'
 
-params.dbsnp = '/data/local/reference/GATK_resource_bundle/hg38/hg38/dbsnp_146.hg38.vcf.gz'
-params.known_indels = '/data/local/reference/GATK_resource_bundle/hg38/hg38/Mills_and_1000G_gold_standard.indels.hg38.vcf.gz'
+params.dbsnp = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/GATK/GRCh38/Annotation/GATKBundle//hg38/dbsnp_146.hg38.vcf.gz'
+params.known_indels = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/GATK/GRCh38/Annotation/GATKBundle//Mills_and_1000G_gold_standard.indels.hg38.vcf.gz'
 
-params.transcriptome_fasta = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.fa'
-params.transcriptome_gtf = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.gtf'
+//params.transcriptome_fasta = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.fa'
+params.transcriptome_fasta = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/Ensembl/Homo_sapiens.GRCh38.cdna.all.fa'
+//params.transcriptome_gtf = '/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/ref-transcripts.gtf'
+params.transcriptome_gtf = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/Ensembl/Homo_sapiens.GRCh38.96.gtf'
 
+params.transcriptome_index = '/mnt/c/Users/jwkar/Documents/GitHub/rnaSeqPreprocessing/reference/Homo_sapiens/Ensembl/transcriptome.idx'
+//transcripts_to_genes.txt
 // For PDX
 params.star_index_dir_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/genome_mouse'
 params.fasta_mouse = '/data/proj/skcm_perkins/Pipelines/rna/preprocessing/rnaSeqPreprocessing/genome_mouse/GRCm38.primary_assembly.genome.fa'
@@ -29,7 +33,7 @@ input_reads_ch_2 = Channel.fromFilePairs( params.fastq, flat:true )
 // For classification with SCOPE and CUP_AI_DX
 params.ext = '.htseq.counts'
 params.genome = 'hg38'
-params.tx2gene_fname = "/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/tx2gene.csv"
+//params.tx2gene_fname = "/data/bin/bcbio/genomes/Hsapiens/hg38/rnaseq/tx2gene.csv"
 params.map_hg19_fname = "/data/proj/cup/Investigations/rna/map.ensembl_entrez.hg19.rda"
 params.map_hg38_fname = "/data/proj/cup/Investigations/rna/map.ensembl_entrez.hg38.rda"
 params.features_fname = "/data/proj/cup/Investigations/rna/CUP-AI-Dx/Features_817.csv"
@@ -336,7 +340,7 @@ process PREPARE_COUNT_MATRIX_SCOPE {
 process PREPARE_COUNT_MATRIX_CUP_AI_DX {
 
     input:
-        path(transcript_counts)
+        tuple path(transcript_counts), path(tx2gene)
 
     output:
         path("*.csv"), emit: matrix_path
@@ -350,7 +354,7 @@ process PREPARE_COUNT_MATRIX_CUP_AI_DX {
     sname <- basename(dirname(normalizePath("${transcript_counts}")))
     fnames <- setNames("${transcript_counts}",sname)
 
-    tx2gene <- read.table("${params.tx2gene_fname}", header=F, sep=",")
+    tx2gene <- read.table("${tx2gene}", header=F, sep=",")
     colnames(tx2gene) <- c("tx","gene")
 
     txi.kallisto <- tximport(fnames, type = "kallisto", txOut = F,
@@ -744,22 +748,64 @@ process BAM_TO_FASTQ {
     """
 }
 
+process GENERATE_TX2GENE {
+
+    publishDir "${params.outdir}/tx2gene", mode: "copy"
+
+    input:
+        path(gtf_file)
+
+    output:
+        path("tx2gene.csv"), emit: tx2gene_ch
+    
+    script:
+    """
+    #!/usr/bin/env Rscript
+
+    # Load necessary libraries
+    library(GenomicFeatures)
+
+    # Fetch the arguments passed to the R script
+    #args <- commandArgs(trailingOnly = TRUE)
+
+    # Check if an argument was provided
+    #if (length(args) == 0) {
+    #stop("You must provide a path to the GTF file.")
+    #}
+
+    gtf_path <- "${gtf_file}"
+
+    # Create the tx2gene dataframe
+    txdb <- makeTxDbFromGFF(gtf_path, format="gtf")
+    keys <- keys(txdb, keytype = "TXNAME")
+    tx2gene <- select(txdb, keys, keytype = "TXNAME", columns = "GENEID")
+    write.csv(tx2gene, "tx2gene.csv", row.names = FALSE)
+    """
+}
+
 process KALLISTO_INDEX {
 
-    publishDir "${params.outdir}/kallisto", mode: 'symlink'
+    publishDir "${params.outdir}/kallisto", mode: 'copy'
+
+    input:
+        val(idx)
 
     output:
         path("hg38_index"), emit: kallisto_index_ch
 
     script:
     """
-    kallisto index -i hg38_index ${params.transcriptome_fasta}
-    """
+    if [[ "$idx" == "TO_BE_GENERATED" ]] || [[ ! -f "$idx" ]]; then
+        kallisto index -i hg38_index ${params.transcriptome_fasta}
+    else
+        ln -s $idx hg38_index
+    fi
+    """    
 }
 
 process KALLISTO {
 
-    maxForks 2
+    maxForks 1
 
     publishDir "${params.outdir}/kallisto", mode: 'symlink'
 
@@ -773,7 +819,7 @@ process KALLISTO {
     script:
     """
     mkdir "./${sample}"
-    kallisto quant -i "${hg38_index}" -o "./${sample}/" -b 100 --fusion --gtf ${params.transcriptome_gtf} --threads 31 "${fastq_1}" "${fastq_2}"
+    kallisto quant -i "${hg38_index}" -o "./${sample}/" -b 100 --fusion --gtf ${params.transcriptome_gtf} --threads ${params.cpus} "${fastq_1}" "${fastq_2}"
     """
 }
 
@@ -807,7 +853,7 @@ workflow {
 		input_reads_ch_1
 	)
 
-    starOutputHuman = STAR_ALIGN_HUMAN(
+    /* starOutputHuman = STAR_ALIGN_HUMAN(
 		input_reads_ch_2
 	)
 
@@ -892,20 +938,25 @@ workflow {
 
     VCF2MAF(
         vep_ch
-    )
+    ) */
 
-    kallisto_index_ch = KALLISTO_INDEX()
+    tx2gene_ch = GENERATE_TX2GENE(Channel.fromPath(params.gtf_human))
 
-    if (params.is_pdx){
+    kallisto_index_file_ch = params.transcriptome_index ? Channel.value(params.transcriptome_index) : Channel.value('TO_BE_GENERATED')
+    kallisto_index_file_ch.view()
+    kallisto_index_ch = KALLISTO_INDEX(kallisto_index_file_ch)
+    kallisto_index_ch.view()
+
+    /* if (params.is_pdx){
         pdx_merged_ch = merged_bam_ch.map { file ->
             def basename = file.baseName.tokenize('.').first()
             return tuple(basename, file)
         }
         bam_to_fastq_from_merged_ch = BAM_TO_FASTQ(pdx_merged_ch)
         input_reads_ch_with_index = bam_to_fastq_from_merged_ch.combine(kallisto_index_ch)
-    } else {
+    } else { */
         input_reads_ch_with_index = input_reads_ch_2.combine(kallisto_index_ch)
-    }
+   // }
 
     KALLISTO(
         input_reads_ch_with_index
@@ -915,17 +966,17 @@ workflow {
         KALLISTO.out.kallisto_ch
     )
 
-    scope_matrix_path_ch = PREPARE_COUNT_MATRIX_SCOPE(
+    /* scope_matrix_path_ch = PREPARE_COUNT_MATRIX_SCOPE(
         htseq_ch
-    )
+    ) */
 
     cup_ai_dx_matrix_path_ch = PREPARE_COUNT_MATRIX_CUP_AI_DX(
-        KALLISTO.out.kallisto_h5_ch
+        KALLISTO.out.kallisto_h5_ch.combine(tx2gene_ch)
     )
 
-    CLASSIFY_SCOPE(
+   /*  CLASSIFY_SCOPE(
         scope_matrix_path_ch
-    )
+    ) */
 
     CLASSIFY_CUP_AI_DX(
         cup_ai_dx_matrix_path_ch
